@@ -7,6 +7,7 @@ Photosite is a deployable custom-photo-frame storefront. It contains a responsiv
 ```text
 photosite/
 ├── app.py                 # Flask application and order/payment API
+├── notifications.py       # New-order email notifications
 ├── templates/
 │   ├── index.html         # Storefront HTML
 │   └── admin.html         # Order dashboard
@@ -19,6 +20,12 @@ photosite/
 ├── requirements.txt
 └── .env.example
 ```
+
+## Customer accounts
+
+Customers can create an account or sign in from the storefront. Passwords are hashed on the server, sessions are HTTP-only, and each order made while signed in is visible on the private `/account` page. Guest checkout is still available for customers who do not want an account.
+
+Set `SESSION_COOKIE_SECURE=true` in your hosting environment once the website is behind HTTPS on your domain. Keep it `false` only for local development at `http://127.0.0.1`.
 
 ## Run locally
 
@@ -48,6 +55,19 @@ photosite/
 ## Payments
 
 Cash on Delivery works immediately and creates an order in `data/photosite.db`.
+
+## Get an email when someone orders
+
+The app automatically sends a **new-order notification** for every confirmed order—immediately for Cash on Delivery and only after payment verification for Razorpay. The email includes the order ID, customer and delivery details, items, total, payment status, and note.
+
+For a first launch, Gmail is the simplest option:
+
+1. Create a dedicated business Gmail address (for example `photosite.orders@gmail.com`) or use your existing business email.
+2. In that Google account, turn on 2-Step Verification, then create a 16-character **App Password** for “Mail”. Do not use your normal Gmail password.
+3. Set `NOTIFICATION_EMAIL`, `SMTP_FROM_EMAIL`, `SMTP_USERNAME`, and `SMTP_PASSWORD` in the host’s environment settings. Keep `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, and `SMTP_USE_TLS=true`.
+4. Place a Cash on Delivery test order and confirm that the email arrives before launch.
+
+When no SMTP values are set, Photosite safely continues to take orders and stores them in the private dashboard; it logs that the alert was skipped rather than exposing an error to customers.
 
 To enable Razorpay, create a Razorpay account and place your live credentials in the server’s environment—never in `static/js/app.js` or a public repository:
 

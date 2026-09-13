@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>My Account — Photosite</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" /><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/account.css') }}" />
+  </head>
+  <body>
+    <main class="account-page"><header class="account-header"><a href="/" class="brand">Photo<span>site</span></a><button class="text-signout" id="signOut">Sign out</button></header><section class="account-welcome"><div><div class="eyebrow">Your Photosite account</div><h1>Hi, {{ user['name'] }}.</h1><p>{{ user['email'] }} · All the memories you’ve ordered in one place.</p></div><a href="/#customize" class="btn btn-primary">Create a new frame →</a></section><section><h2>Your orders</h2><div class="account-orders">{% for order in orders %}<article class="account-order"><div><b>{{ order['order_number'] }}</b><small>Placed {{ order['created_at'][:10] }}</small></div><div class="order-item-list">{% for item in order['items_json']|from_json %}<span>{{ item['name'] }} × {{ item['quantity'] }}</span>{% endfor %}</div><div><span class="order-chip order-{{ order['order_status'] }}">{{ order['order_status'].title() }}</span><b>₹{{ "{:,}".format(order['amount']) }}</b></div></article>{% else %}<div class="account-empty"><h3>Your story starts here.</h3><p>You haven’t placed an order yet. Make your first custom frame and it will live here.</p><a class="btn btn-primary" href="/#customize">Start customising →</a></div>{% endfor %}</div></section></main>
+    <script>document.getElementById('signOut').addEventListener('click', async () => { await fetch('/api/auth/logout', {method:'POST'}); window.location.href='/'; });</script>
+  </body>
+</html>

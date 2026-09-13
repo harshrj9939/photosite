@@ -5,6 +5,7 @@ let cart = [];
 let selectedColor = "walnut";
 let selectedPhoto = null;
 let publicConfig = { online_payments: false };
+let currentUser = null;
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -47,6 +48,42 @@ function showOrderSuccess(orderNumber, paymentMethod) {
 function renderCheckout() {
   $("#checkoutItems").innerHTML = cart.map(item => `<div class="summary-row"><div><b>${item.name}</b><small>${item.type === "custom" ? `${item.size.replace("x", " × ")} in · ${item.color}` : "Ready-to-style frame"}</small></div><strong>${formatPrice(item.price * item.quantity)}</strong></div>`).join("");
   $("#checkoutTotal").textContent = formatPrice(cartTotal());
+}
+
+function setAuthMode(mode) {
+  const registering = mode === "register";
+  $("#authForm").dataset.mode = mode;
+  $("#authNameField").hidden = !registering;
+  $("#authName").required = registering;
+  $("#authPassword").autocomplete = registering ? "new-password" : "current-password";
+  $("#authTitle").textContent = registering ? "Make a place for your memories." : "Welcome back.";
+  $("#authIntro").textContent = registering ? "Create an account to save every Photosite order in one place." : "Sign in to see your orders and check out faster.";
+  $("#authSubmit").innerHTML = registering ? 'Create account <span aria-hidden="true">→</span>' : 'Sign in <span aria-hidden="true">→</span>';
+  $("#authSwitch").innerHTML = registering ? 'Already have an account? <button type="button" id="authToggle">Sign in</button>' : 'New to Photosite? <button type="button" id="authToggle">Create an account</button>';
+  $("#authToggle").addEventListener("click", () => setAuthMode(registering ? "login" : "register"));
+  $("#authError").textContent = "";
+}
+
+function openAuth(mode = "login") { setAuthMode(mode); setModal($("#authModal"), true); }
+
+function updateAccountLink() {
+  const link = $("#accountLink");
+  if (!link) return;
+  link.textContent = currentUser ? "My account" : "Sign in";
+  link.dataset.guest = currentUser ? "false" : "true";
+}
+
+async function submitAuth(event) {
+  event.preventDefault();
+  const form = event.currentTarget; const mode = form.dataset.mode || "login";
+  const error = $("#authError"); const button = $("#authSubmit"); error.textContent = ""; button.disabled = true;
+  try {
+    const body = { email: $("#authEmail").value, password: $("#authPassword").value };
+    if (mode === "register") body.name = $("#authName").value;
+    const response = await fetch(`/api/auth/${mode === "register" ? "register" : "login"}`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
+    const data = await response.json(); if (!response.ok) throw new Error(data.error || "We could not complete that request.");
+    currentUser = data.user; updateAccountLink(); form.reset(); setModal($("#authModal"), false);
+  } catch (err) { error.textContent = err.message; } finally { button.disabled = false; }
 }
 
 async function submitOrder(event) {
@@ -93,7 +130,8 @@ function setupTestimonials() {
 }
 
 async function init() {
-  try { publicConfig = await (await fetch("/api/config")).json(); } catch { /* COD remains available if offline. */ }
+  try { [publicConfig, { user: currentUser }] = await Promise.all([fetch("/api/config").then(response => response.json()), fetch("/api/auth/me").then(response => response.json())]); } catch { /* COD remains available if offline. */ }
+  updateAccountLink();
   if (!publicConfig.online_payments) { $("#razorpayOption").classList.add("disabled"); $("#razorpayOption input").disabled = true; $("#razorpayOption").title = "Online payments will be available when Razorpay is configured."; }
   renderCart(); setupCarousel(); setupTestimonials();
   $$(".open-customizer").forEach(button => button.addEventListener("click", event => { event.preventDefault(); setModal($("#customizer"), true); }));
@@ -102,7 +140,10 @@ async function init() {
   $("#successClose").addEventListener("click", () => setModal($("#successModal"), false));
   $$(".modal").forEach(modal => modal.addEventListener("click", event => { if (event.target === modal) setModal(modal, false); }));
   $("#cartButton").addEventListener("click", openCart); $("#closeCart").addEventListener("click", closeCart); $("#drawerBackdrop").addEventListener("click", closeCart);
-  $("#checkoutButton").addEventListener("click", () => { if (!cart.length) return; closeCart(); renderCheckout(); setModal($("#checkoutModal"), true); });
+  $("#checkoutButton").addEventListener("click", () => { if (!cart.length) return; closeCart(); renderCheckout(); if (currentUser) { $("#name").value = currentUser.name; $("#email").value = currentUser.email; } setModal($("#checkoutModal"), true); });
+  $("#accountLink").addEventListener("click", event => { if ($("#accountLink").dataset.guest === "true") { event.preventDefault(); openAuth(); } });
+  $("#authClose").addEventListener("click", () => setModal($("#authModal"), false));
+  $("#authForm").addEventListener("submit", submitAuth);
   $$(".swatch").forEach(swatch => swatch.addEventListener("click", () => { selectedColor = swatch.dataset.color; $$(".swatch").forEach(item => item.classList.remove("active")); swatch.classList.add("active"); const colors = { walnut:["#a26344","#6d3d28"], oak:["#e4ded0","#42453f"], charcoal:["#3e413d","#242624"], brass:["#c48a3f","#79501e"] }; $("#previewFrame").style.background = colors[selectedColor][0]; $("#previewFrame").style.borderColor = colors[selectedColor][1]; }));
   $("#size").addEventListener("change", updateCustomPrice);
   $("#photoUpload").addEventListener("change", event => { const file = event.target.files[0]; if (!file) return; if (file.size > 8 * 1024 * 1024) { event.target.value = ""; alert("Please upload a photo under 8 MB."); return; } selectedPhoto = file; const image = $("#previewImage"); image.src = URL.createObjectURL(file); image.style.display = "block"; $("#previewPlaceholder").style.display = "none"; });
@@ -110,5 +151,6 @@ async function init() {
   $$(".add-product").forEach(button => button.addEventListener("click", () => { const product = productData[button.dataset.product]; addToCart({ type:"product", product_id:button.dataset.product, name:product.name, price:product.price }); }));
   $("#checkoutForm").addEventListener("submit", submitOrder); $("#menuButton").addEventListener("click", () => { const links=$("#navLinks"); links.style.display = links.style.display === "flex" ? "none" : "flex"; });
   document.addEventListener("keydown", event => { if (event.key === "Escape") { $$(".modal.open").forEach(modal => setModal(modal, false)); closeCart(); } });
+  if (new URLSearchParams(window.location.search).get("signin") === "1") openAuth();
 }
 document.addEventListener("DOMContentLoaded", init);

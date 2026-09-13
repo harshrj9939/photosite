@@ -20,8 +20,9 @@ from pathlib import Path
 from typing import Any
 
 import razorpay
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 
@@ -59,6 +60,9 @@ app.config.update(
     SECRET_KEY=os.getenv("FLASK_SECRET_KEY", secrets.token_urlsafe(32)),
     MAX_CONTENT_LENGTH=8 * 1024 * 1024,
     UPLOAD_FOLDER=str(UPLOAD_DIR),
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true",
 )
 app.jinja_env.filters["from_json"] = json.loads
 
@@ -94,10 +98,22 @@ def init_db() -> None:
                 order_status TEXT NOT NULL DEFAULT 'placed',
                 razorpay_order_id TEXT,
                 razorpay_payment_id TEXT,
+                user_id INTEGER,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
             """
         )
+        # Small migration for stores created before customer accounts were added.
+        order_columns = {row["name"] for row in connection.execute("PRAGMA table_info(orders)")}
+        if "user_id" not in order_columns:
+            connection.execute("ALTER TABLE orders ADD COLUMN user_id INTEGER")
 
 
 def is_allowed_image(filename: str) -> bool:
@@ -181,6 +197,27 @@ def razorpay_client() -> razorpay.Client:
     return razorpay.Client(auth=(os.environ["RAZORPAY_KEY_ID"], os.environ["RAZORPAY_KEY_SECRET"]))
 
 
+def current_user() -> sqlite3.Row | None:
+    """Return the signed-in customer, dropping a stale session if the account was removed."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return None
+    with db_connection() as connection:
+        user = connection.execute("SELECT id, name, email, created_at FROM users WHERE id = ?", (user_id,)).fetchone()
+    if user is None:
+        session.clear()
+    return user
+
+
+def customer_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if current_user() is None:
+            return redirect(url_for("homepage", signin="1"))
+        return view(*args, **kwargs)
+    return wrapped
+
+
 def admin_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
@@ -202,7 +239,67 @@ def admin_required(view):
 
 @app.get("/")
 def homepage():
-    return render_template("index.html")
+    return render_template("index.html", user=current_user())
+
+
+@app.get("/api/auth/me")
+def auth_me():
+    user = current_user()
+    if not user:
+        return jsonify({"user": None})
+    return jsonify({"user": {"id": user["id"], "name": user["name"], "email": user["email"]}})
+
+
+@app.post("/api/auth/register")
+def register():
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name", "")).strip()
+    email = str(data.get("email", "")).strip().lower()
+    password = str(data.get("password", ""))
+    if len(name) < 2 or "@" not in email or len(email) > 254:
+        return jsonify({"error": "Enter your name and a valid email address."}), 400
+    if len(password) < 8:
+        return jsonify({"error": "Choose a password with at least 8 characters."}), 400
+    with db_connection() as connection:
+        try:
+            cursor = connection.execute(
+                "INSERT INTO users (name, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
+                (name, email, generate_password_hash(password), datetime.now(timezone.utc).isoformat()),
+            )
+        except sqlite3.IntegrityError:
+            return jsonify({"error": "An account with this email already exists. Please sign in."}), 409
+    session.clear()
+    session["user_id"] = cursor.lastrowid
+    return jsonify({"user": {"id": cursor.lastrowid, "name": name, "email": email}}), 201
+
+
+@app.post("/api/auth/login")
+def login():
+    data = request.get_json(silent=True) or {}
+    email = str(data.get("email", "")).strip().lower()
+    password = str(data.get("password", ""))
+    with db_connection() as connection:
+        user = connection.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    if user is None or not check_password_hash(user["password_hash"], password):
+        return jsonify({"error": "Email or password is incorrect."}), 401
+    session.clear()
+    session["user_id"] = user["id"]
+    return jsonify({"user": {"id": user["id"], "name": user["name"], "email": user["email"]}})
+
+
+@app.post("/api/auth/logout")
+def logout():
+    session.clear()
+    return jsonify({"message": "Signed out."})
+
+
+@app.get("/account")
+@customer_required
+def account():
+    user = current_user()
+    with db_connection() as connection:
+        orders = connection.execute("SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC", (user["id"],)).fetchall()
+    return render_template("account.html", user=user, orders=orders)
 
 
 @app.get("/api/config")
@@ -257,9 +354,9 @@ def create_order():
     created_at = datetime.now(timezone.utc).isoformat()
     with db_connection() as connection:
         cursor = connection.execute(
-            """INSERT INTO orders (order_number, customer_name, email, phone, address, city, postal_code, notes, items_json, amount, payment_method, payment_status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (number, fields["name"], fields["email"], fields["phone"], fields["address"], fields["city"], fields["postal_code"], fields["notes"], json.dumps(safe_items), total, fields["payment_method"], payment_status, created_at),
+            """INSERT INTO orders (order_number, customer_name, email, phone, address, city, postal_code, notes, items_json, amount, payment_method, payment_status, user_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (number, fields["name"], fields["email"], fields["phone"], fields["address"], fields["city"], fields["postal_code"], fields["notes"], json.dumps(safe_items), total, fields["payment_method"], payment_status, current_user()["id"] if current_user() else None, created_at),
         )
         internal_id = cursor.lastrowid
 
