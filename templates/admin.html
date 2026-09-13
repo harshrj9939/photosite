@@ -8,11 +8,166 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
   </head>
   <body>
-    <main class="admin-page"><header><div><div class="eyebrow">Private dashboard</div><h1>Photosite orders</h1><p>{{ orders|length }} order{{ '' if orders|length == 1 else 's' }} in your store.</p></div><a href="/" class="btn btn-primary">View storefront →</a></header>
-      <div class="order-table-wrap"><table class="order-table"><thead><tr><th>Order</th><th>Customer & delivery</th><th>Items</th><th>Payment</th><th>Total</th><th>Placed</th><th>Fulfilment</th></tr></thead><tbody>
-        {% for order in orders %}<tr><td><b>{{ order['order_number'] }}</b></td><td><b>{{ order['customer_name'] }}</b><br>{{ order['email'] }}<br>{{ order['phone'] }}<br><br>{{ order['address'] }}, {{ order['city'] }} — {{ order['postal_code'] }}{% if order['notes'] %}<br><br><em>“{{ order['notes'] }}”</em>{% endif %}</td><td><ul>{% for item in order['items_json']|from_json %}<li><b>{{ item['name'] }}</b> × {{ item['quantity'] }}<br><small>{% if item['size_label'] %}{{ item['size_label'] }} · {{ item['color_label'] }}{% endif %}{% if item['photo'] %}<br><a href="/{{ item['photo'] }}" target="_blank" rel="noreferrer">View photo</a>{% endif %}</small></li>{% endfor %}</ul></td><td><b>{{ order['payment_method']|upper }}</b><br><span class="status-{{ order['payment_status'] }}">{{ order['payment_status'].replace('_', ' ')|title }}</span></td><td><b>₹{{ "{:,}".format(order['amount']) }}</b></td><td>{{ order['created_at'][:10] }}<br><small>{{ order['created_at'][11:16] }} UTC</small></td><td><select class="status-select" data-order-id="{{ order['id'] }}"><option value="placed" {% if order['order_status'] == 'placed' %}selected{% endif %}>Placed</option><option value="processing" {% if order['order_status'] == 'processing' %}selected{% endif %}>Processing</option><option value="shipped" {% if order['order_status'] == 'shipped' %}selected{% endif %}>Shipped</option><option value="delivered" {% if order['order_status'] == 'delivered' %}selected{% endif %}>Delivered</option><option value="cancelled" {% if order['order_status'] == 'cancelled' %}selected{% endif %}>Cancelled</option></select></td></tr>{% else %}<tr><td colspan="7" style="text-align:center;padding:45px;color:#6d716b">No orders yet. Your first customer is waiting.</td></tr>{% endfor %}
-      </tbody></table></div>
+    <main class="admin-page">
+      <header>
+        <div>
+          <div class="eyebrow">Private dashboard</div>
+          <h1>Photosite orders</h1>
+          <p>{{ orders|length }} order{{ '' if orders|length == 1 else 's' }} in your store.</p>
+        </div>
+        <a href="/" class="btn btn-primary">View storefront →</a>
+      </header>
+
+      <section class="admin-summary" aria-label="Sales summary">
+        <article class="metric-card">
+          <span class="metric-label">Total orders</span>
+          <strong>{{ metrics['total_orders'] or 0 }}</strong>
+          <small>All orders placed</small>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Order value</span>
+          <strong>₹{{ "{:,}".format((metrics['order_value'] or 0)|int) }}</strong>
+          <small>Revenue across active orders</small>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Paid value</span>
+          <strong>₹{{ "{:,}".format((metrics['paid_value'] or 0)|int) }}</strong>
+          <small>Confirmed online payments</small>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Action needed</span>
+          <strong>{{ metrics['action_needed'] or 0 }}</strong>
+          <small>Placed or processing</small>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Shipped</span>
+          <strong>{{ metrics['shipped_orders'] or 0 }}</strong>
+          <small>Currently in transit</small>
+        </article>
+      </section>
+
+      <section class="admin-panels">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Notification status</h2>
+          </div>
+          <p class="notification-status {% if notifications_enabled %}good{% else %}warn{% endif %}">
+            {% if notifications_enabled %}Email alerts are enabled for {{ notification_email }}.{% else %}Email alerts are not configured yet.{% endif %}
+          </p>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Customers</h2>
+          </div>
+          <div class="customer-list">
+            {% for customer in customers %}
+              <div class="customer-row">
+                <div>
+                  <strong>{{ customer['customer_name'] }}</strong>
+                  <span>{{ customer['email'] }}</span>
+                </div>
+                <div class="customer-meta">
+                  <span>{{ customer['orders_count'] }} orders</span>
+                  <strong>₹{{ "{:,}".format((customer['lifetime_value'] or 0)|int) }}</strong>
+                </div>
+              </div>
+            {% else %}
+              <p class="empty-note">No customers have placed an order yet.</p>
+            {% endfor %}
+          </div>
+        </article>
+      </section>
+
+      <div class="order-table-wrap">
+        <table class="order-table">
+          <thead>
+            <tr>
+              <th>Order</th>
+              <th>Customer & delivery</th>
+              <th>Items</th>
+              <th>Payment</th>
+              <th>Total</th>
+              <th>Placed</th>
+              <th>Fulfilment</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for order in orders %}
+              <tr>
+                <td><b>{{ order['order_number'] }}</b></td>
+                <td><b>{{ order['customer_name'] }}</b><br>{{ order['email'] }}<br>{{ order['phone'] }}<br><br>{{ order['address'] }}, {{ order['city'] }} — {{ order['postal_code'] }}{% if order['notes'] %}<br><br><em>“{{ order['notes'] }}”</em>{% endif %}</td>
+                <td>
+                  <ul>
+                    {% for item in order['items_json']|from_json %}
+                      <li>
+                        <b>{{ item['name'] }}</b> × {{ item['quantity'] }}<br>
+                        <small>{% if item['size_label'] %}{{ item['size_label'] }} · {{ item['color_label'] }}{% endif %}{% if item['photo'] %}<br><a href="/{{ item['photo'] }}" target="_blank" rel="noreferrer">View photo</a>{% endif %}</small>
+                      </li>
+                    {% endfor %}
+                  </ul>
+                </td>
+                <td><b>{{ order['payment_method']|upper }}</b><br><span class="status-{{ order['payment_status'] }}">{{ order['payment_status'].replace('_', ' ')|title }}</span></td>
+                <td><b>₹{{ "{:,}".format(order['amount']) }}</b></td>
+                <td>{{ order['created_at'][:10] }}<br><small>{{ order['created_at'][11:16] }} UTC</small></td>
+                <td>
+                  <select class="status-select" data-order-id="{{ order['id'] }}">
+                    <option value="placed" {% if order['order_status'] == 'placed' %}selected{% endif %}>Placed</option>
+                    <option value="processing" {% if order['order_status'] == 'processing' %}selected{% endif %}>Processing</option>
+                    <option value="shipped" {% if order['order_status'] == 'shipped' %}selected{% endif %}>Shipped</option>
+                    <option value="delivered" {% if order['order_status'] == 'delivered' %}selected{% endif %}>Delivered</option>
+                    <option value="cancelled" {% if order['order_status'] == 'cancelled' %}selected{% endif %}>Cancelled</option>
+                  </select>
+                </td>
+              </tr>
+            {% else %}
+              <tr><td colspan="7" style="text-align:center;padding:45px;color:#6d716b">No orders yet. Your first customer is waiting.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </main>
+
+    <style>
+      .admin-page { max-width: 1200px; margin: 0 auto; padding: 42px 28px 64px; }
+      .admin-page header { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 28px; }
+      .admin-page h1 { margin: 10px 0 8px; font-size: clamp(2.5rem, 5vw, 4rem); line-height: 1; }
+      .admin-page p { margin: 0; color: var(--muted); }
+      .admin-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 16px; margin: 20px 0 28px; }
+      .metric-card, .panel { background: rgba(255,255,255,0.7); border: 1px solid var(--line); border-radius: 22px; box-shadow: 0 16px 36px rgba(30, 32, 29, 0.06); }
+      .metric-card { padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; }
+      .metric-label { text-transform: uppercase; letter-spacing: .1em; font-size: 10px; color: var(--muted); font-weight: 700; }
+      .metric-card strong { font-size: clamp(1.5rem, 3vw, 2.2rem); line-height: 1; }
+      .metric-card small { color: var(--muted); }
+      .admin-panels { display: grid; grid-template-columns: 1fr 2fr; gap: 18px; margin-bottom: 22px; }
+      .panel { padding: 18px 20px; }
+      .panel-head { margin-bottom: 14px; }
+      .panel-head h2 { margin: 0; font-size: 1.15rem; }
+      .notification-status { margin: 0; padding: 14px 16px; border-radius: 14px; background: rgba(204, 230, 122, 0.18); border: 1px solid rgba(30, 32, 29, 0.08); color: var(--ink); }
+      .notification-status.warn { background: rgba(250, 113, 75, 0.12); }
+      .customer-list { display: flex; flex-direction: column; gap: 12px; }
+      .customer-row { display: flex; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+      .customer-row:last-child { border-bottom: 0; }
+      .customer-row strong, .customer-row span { display: block; }
+      .customer-row span { color: var(--muted); font-size: 0.84rem; }
+      .customer-meta { text-align: right; }
+      .empty-note { margin: 0; color: var(--muted); }
+      .order-table-wrap { overflow-x: auto; background: rgba(255,255,255,0.55); border: 1px solid var(--line); border-radius: 22px; }
+      .order-table { width: 100%; border-collapse: collapse; min-width: 980px; }
+      .order-table th, .order-table td { padding: 16px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+      .order-table th { text-align: left; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); background: rgba(237,232,220,0.6); }
+      .order-table td { font-size: 0.96rem; }
+      .order-table ul { margin: 0; padding-left: 18px; }
+      .order-table li { margin-bottom: 10px; }
+      .status-select { width: 100%; border: 1px solid var(--line); border-radius: 10px; background: var(--white); padding: 10px 12px; }
+      .status-paid, .status-cash_on_delivery { display: inline-block; padding: 5px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: capitalize; }
+      .status-paid { background: rgba(204, 230, 122, 0.28); }
+      .status-cash_on_delivery { background: rgba(126, 106, 200, 0.12); }
+      .status-pending { background: rgba(250, 113, 75, 0.13); }
+      @media (max-width: 980px) { .admin-summary { grid-template-columns: repeat(2, minmax(0,1fr)); } .admin-panels { grid-template-columns: 1fr; } }
+      @media (max-width: 580px) { .admin-page { padding-left: 16px; padding-right: 16px; } .admin-page header { display: block; } .admin-page header .btn { margin-top: 16px; display: inline-flex; } .admin-summary { grid-template-columns: 1fr; } }
+    </style>
+
     <script>
       document.querySelectorAll('.status-select').forEach(select => select.addEventListener('change', async () => {
         const previous = select.dataset.previous || select.value; select.disabled = true;
