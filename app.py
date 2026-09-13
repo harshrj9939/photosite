@@ -25,6 +25,7 @@ from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
+from notifications import is_email_configured, notify_new_order
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -352,11 +353,12 @@ def create_order():
     number = order_number()
     payment_status = "pending" if fields["payment_method"] == "razorpay" else "cash_on_delivery"
     created_at = datetime.now(timezone.utc).isoformat()
+    signed_in_user = current_user()
     with db_connection() as connection:
         cursor = connection.execute(
             """INSERT INTO orders (order_number, customer_name, email, phone, address, city, postal_code, notes, items_json, amount, payment_method, payment_status, user_id, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (number, fields["name"], fields["email"], fields["phone"], fields["address"], fields["city"], fields["postal_code"], fields["notes"], json.dumps(safe_items), total, fields["payment_method"], payment_status, current_user()["id"] if current_user() else None, created_at),
+            (number, fields["name"], fields["email"], fields["phone"], fields["address"], fields["city"], fields["postal_code"], fields["notes"], json.dumps(safe_items), total, fields["payment_method"], payment_status, signed_in_user["id"] if signed_in_user else None, created_at),
         )
         internal_id = cursor.lastrowid
 
@@ -366,6 +368,8 @@ def create_order():
         with db_connection() as connection:
             connection.execute("UPDATE orders SET razorpay_order_id = ? WHERE id = ?", (payment_order["id"], internal_id))
         response["razorpay"] = {"key": os.environ["RAZORPAY_KEY_ID"], "order_id": payment_order["id"], "name": "Photosite", "description": f"Order {number}"}
+    else:
+        notify_new_order({"order_number": number, "amount": total, "payment_method": "cod", "payment_status": payment_status, **fields}, safe_items)
     return jsonify(response), 201
 
 
@@ -382,10 +386,13 @@ def verify_razorpay_payment():
     if not hmac.compare_digest(expected, signature):
         return jsonify({"error": "Payment verification failed."}), 400
     with db_connection() as connection:
-        order = connection.execute("SELECT order_number FROM orders WHERE razorpay_order_id = ?", (received_order_id,)).fetchone()
+        order = connection.execute("SELECT * FROM orders WHERE razorpay_order_id = ?", (received_order_id,)).fetchone()
         if not order:
             return jsonify({"error": "Order not found."}), 404
         connection.execute("UPDATE orders SET payment_status = 'paid', payment_method = 'razorpay', razorpay_payment_id = ? WHERE razorpay_order_id = ?", (payment_id, received_order_id))
+    order_data = dict(order)
+    order_data["payment_status"] = "paid"
+    notify_new_order(order_data, json.loads(order_data["items_json"]))
     return jsonify({"message": "Payment verified.", "order_number": order["order_number"]})
 
 
@@ -394,7 +401,22 @@ def verify_razorpay_payment():
 def admin_dashboard():
     with db_connection() as connection:
         orders = connection.execute("SELECT * FROM orders ORDER BY created_at DESC").fetchall()
-    return render_template("admin.html", orders=orders)
+        metrics = connection.execute(
+            """SELECT COUNT(*) AS total_orders,
+                      COALESCE(SUM(CASE WHEN order_status != 'cancelled' THEN amount ELSE 0 END), 0) AS order_value,
+                      COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN amount ELSE 0 END), 0) AS paid_value,
+                      COALESCE(SUM(CASE WHEN order_status IN ('placed', 'processing') THEN 1 ELSE 0 END), 0) AS action_needed,
+                      COALESCE(SUM(CASE WHEN order_status = 'shipped' THEN 1 ELSE 0 END), 0) AS shipped_orders
+               FROM orders"""
+        ).fetchone()
+        customers = connection.execute(
+            """SELECT customer_name, email, phone, COUNT(*) AS orders_count,
+                      COALESCE(SUM(amount), 0) AS lifetime_value, MAX(created_at) AS last_order
+               FROM orders GROUP BY lower(email) ORDER BY last_order DESC"""
+        ).fetchall()
+    return render_template("admin.html", orders=orders, metrics=metrics, customers=customers,
+                           notifications_enabled=is_email_configured(),
+                           notification_email=os.getenv("NOTIFICATION_EMAIL", "Not configured"))
 
 
 @app.patch("/api/admin/orders/<int:order_id>/status")
